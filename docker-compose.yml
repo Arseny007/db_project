@@ -1,0 +1,85 @@
+version: "3.5"
+services:
+  postgres:
+    container_name: ${APP_NAME}-postgres
+    build:
+      context: .
+      dockerfile: ./dockerfile-pg
+      args:
+        POSTGRES_DB: ${POSTGRES_DB}
+    environment:
+      POSTGRESQL_DATABASE: ${POSTGRES_DB}
+      POSTGRESQL_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRESQL_SHARED_PRELOAD_LIBRARIES: "pgaudit,pg_cron"
+      POSTGRESQL_REPLICATION_MODE: master
+      POSTGRESQL_REPLICATION_USER: repl_user
+      POSTGRESQL_REPLICATION_PASSWORD: repl_password
+
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    restart: unless-stopped
+  redis:
+    container_name: ${APP_NAME}-redis
+    image: redis:7.0.0-alpine
+    command: >
+      --requirepass ${REDIS_PASSWORD}
+    ports:
+      - "${REDIS_PORT}:6379"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    restart: unless-stopped
+  flyway:
+    container_name: ${APP_NAME}-flyway
+    image: flyway/flyway:9.3.1
+    command: -url=jdbc:postgresql://host.docker.internal:${POSTGRES_PORT}/${POSTGRES_DB} -user=${POSTGRES_USER} -password=${POSTGRES_PASSWORD} migrate
+    volumes:
+      - ./migrations:/flyway/sql
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  flask:
+    container_name: ${APP_NAME}-flask
+    build: .
+    command: >
+      sh -c "python3 -m flask run --host=0.0.0.0"
+    ports:
+      - "${APP_PORT}:${APP_PORT}"
+    env_file: .env
+    environment:
+      FLASK_RUN_PORT: ${APP_PORT}
+      POSTGRES_HOST: host.docker.internal
+      REDIS_HOST: host.docker.internal
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  elasticsearch:
+    container_name: ${APP_NAME}-elasticsearch
+    image: bitnami/elasticsearch:8.5.0
+    ports:
+      - "${ELASTIC_PORT}:9200"
+    environment:
+      - xpack.security.enabled=false
+      - network.host=127.0.0.1
+      - http.host=0.0.0.0
+    healthcheck:
+      test: curl -u elastic:elastic -s -f elasticsearch:9200/_cat/health >/dev/null || exit 1
+      interval: 1s
+      retries: 100
